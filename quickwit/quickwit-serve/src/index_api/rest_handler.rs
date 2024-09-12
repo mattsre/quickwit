@@ -108,7 +108,27 @@ pub fn index_management_handlers(
         .or(analyze_request_handler())
         // Parse query into query AST handler.
         .or(parse_query_request_handler())
+        // Redirect `indices/**` to `indexes/**`
+        .or(indices_redirect_handler())
         .recover(recover_fn)
+}
+
+pub fn indices_redirect_handler(
+) -> impl Filter<Extract = (impl warp::Reply,), Error = Rejection> + Clone {
+    warp::path!("indices" / ..)
+        .and(warp::path::tail())
+        .map(|tail: warp::filters::path::Tail| {
+            let redirect_path = format!("/api/v1/indexes/{}", tail.as_str())
+                .parse()
+                .expect("should parse");
+
+            let mut parts = warp::http::uri::Parts::default();
+            parts.path_and_query = Some(redirect_path);
+            let redirect_uri =
+                warp::http::Uri::from_parts(parts).expect("should produce valid URI");
+
+            warp::redirect(redirect_uri)
+        })
 }
 
 fn json_body<T: DeserializeOwned + Send>(
@@ -1043,18 +1063,30 @@ mod tests {
         let index_management_handler =
             super::index_management_handlers(index_service, Arc::new(NodeConfig::for_test()))
                 .recover(recover_fn);
-        let resp = warp::test::request()
+        let indexes_response = warp::test::request()
             .path("/indexes/test-index")
             .reply(&index_management_handler)
             .await;
-        assert_eq!(resp.status(), 200);
-        let actual_response_json: JsonValue = serde_json::from_slice(resp.body())?;
+        let indices_response = warp::test::request()
+            .path("/indices/test-index")
+            .reply(&index_management_handler)
+            .await;
+        assert_eq!(indexes_response.status(), 200);
+        assert_eq!(indices_response.status(), 200);
+        let actual_indexes_response_json: JsonValue =
+            serde_json::from_slice(indexes_response.body())?;
+        let actual_indices_response_json: JsonValue =
+            serde_json::from_slice(indices_response.body())?;
         let expected_response_json = serde_json::json!({
             "index_id": "test-index",
             "index_uri": "ram:///indexes/test-index",
         });
         assert_json_include!(
-            actual: actual_response_json.get("index_config").unwrap(),
+            actual: actual_indexes_response_json.get("index_config").unwrap(),
+            expected: expected_response_json
+        );
+        assert_json_include!(
+            actual: actual_indices_response_json.get("index_config").unwrap(),
             expected: expected_response_json
         );
         Ok(())
@@ -1067,11 +1099,17 @@ mod tests {
         let index_management_handler =
             super::index_management_handlers(index_service, Arc::new(NodeConfig::for_test()))
                 .recover(recover_fn);
-        let resp = warp::test::request()
+        let indexes_response = warp::test::request()
             .path("/indexes/test-index")
             .reply(&index_management_handler)
             .await;
-        assert_eq!(resp.status(), 404);
+        let indices_response = warp::test::request()
+            .path("/indices/test-index")
+            .reply(&index_management_handler)
+            .await;
+
+        assert_eq!(indexes_response.status(), 404);
+        assert_eq!(indices_response.status(), 404);
     }
 
     #[tokio::test]
@@ -1117,15 +1155,26 @@ mod tests {
             super::index_management_handlers(index_service, Arc::new(NodeConfig::for_test()))
                 .recover(recover_fn);
         {
-            let resp = warp::test::request()
+            let indexes_response = warp::test::request()
                 .path(
                     "/indexes/quickwit-demo-index/splits?split_states=Published,Staged&\
                      start_timestamp=10&end_timestamp=20&end_create_timestamp=2",
                 )
                 .reply(&index_management_handler)
                 .await;
-            assert_eq!(resp.status(), 200);
-            let actual_response_json: JsonValue = serde_json::from_slice(resp.body()).unwrap();
+            let indices_response = warp::test::request()
+                .path(
+                    "/indices/quickwit-demo-index/splits?split_states=Published,Staged&\
+                    start_timestamp=10&end_timestamp=20&end_create_timestamp=2",
+                )
+                .reply(&index_management_handler)
+                .await;
+            assert_eq!(indexes_response.status(), 200);
+            assert_eq!(indices_response.status(), 200);
+            let actual_indexes_response_json: JsonValue =
+                serde_json::from_slice(indexes_response.body()).unwrap();
+            let actual_indices_response_json: JsonValue =
+                serde_json::from_slice(indices_response.body()).unwrap();
             let expected_response_json = serde_json::json!({
                 "splits": [
                     {
@@ -1135,19 +1184,31 @@ mod tests {
                 ]
             });
             assert_json_include!(
-                actual: actual_response_json,
+                actual: actual_indexes_response_json,
+                expected: expected_response_json
+            );
+            assert_json_include!(
+                actual: actual_indices_response_json,
                 expected: expected_response_json
             );
         }
         {
-            let resp = warp::test::request()
+            let indexes_response = warp::test::request()
                 .path(
                     "/indexes/quickwit-demo-index/splits?split_states=Published&\
                      start_timestamp=11&end_timestamp=20&end_create_timestamp=2",
                 )
                 .reply(&index_management_handler)
                 .await;
-            assert_eq!(resp.status(), 500);
+            let indices_response = warp::test::request()
+                .path(
+                    "/indices/quickwit-demo-index/splits?split_states=Published&\
+                                 start_timestamp=11&end_timestamp=20&end_create_timestamp=2",
+                )
+                .reply(&index_management_handler)
+                .await;
+            assert_eq!(indexes_response.status(), 500);
+            assert_eq!(indices_response.status(), 500);
         }
     }
 
